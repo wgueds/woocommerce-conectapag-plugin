@@ -23,6 +23,23 @@ class WC_Gateway_Conectapag extends WC_Payment_Gateway
         $this->description = $this->get_option('description');
 
         add_action('woocommerce_update_options_payment_gateways_' . $this->id, [$this, 'process_admin_options']);
+        add_action('woocommerce_receipt_' . $this->id, [$this, 'receipt_page']);
+
+        // empty car when change status
+        add_action('woocommerce_order_status_pending', 'empty_cart_on_order_status_change', 10, 2);
+        add_action('woocommerce_order_status_processing', 'empty_cart_on_order_status_change', 10, 2);
+    }
+
+    function empty_cart_on_order_status_change($order_id, $order)
+    {
+        // Checks whether the order has been paid (in case of asynchronous processing)
+        if (in_array($order->get_status(), array('pending', 'processing'))) {
+            // Gets WooCommerce Cart
+            $woocommerce = WC();
+
+            // Empty the cart
+            $woocommerce->cart->empty_cart();
+        }
     }
 
     /**
@@ -47,9 +64,32 @@ class WC_Gateway_Conectapag extends WC_Payment_Gateway
             'description' => [
                 'title' => __('ConectaPag Payments Gateway Description', 'conectapag-payment-woo'),
                 'type' => 'textarea',
-                'default' => __('Please remit your payment to the shop to allow for the delivery to be made', 'conectapag-payment-woo'),
+                'default' => __('Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.', 'conectapag-payment-woo'),
                 'desc_tip' => true,
-                'description' => __('Add a new title for the ConectaPag Payments Gateway that customers will see when they are in the checkout page.', 'conectapag-payment-woo')
+                'description' => __('Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.', 'conectapag-payment-woo')
+            ],
+            'environment' => [
+                'title' => __('Staging/Production', 'conectapag-payment-woo'),
+                'type' => 'select',
+                'options' => [
+                    'staging' => __('Staging', 'conectapag-payment-woo'),
+                    'production' => __('Production', 'conectapag-payment-woo'),
+                ],
+                'description' => __('Environment in which payment will be processed.', 'conectapag-payment-woo')
+            ],
+            'api_client_id' => [
+                'title' => __('Client ID', 'conectapag-payment-woo'),
+                'type' => 'textarea',
+                'default' => '',
+                'desc_tip' => true,
+                'description' => __('Client ID provided by Payment Gateway.', 'conectapag-payment-woo')
+            ],
+            'api_secret_id' => [
+                'title' => __('Secret ID', 'conectapag-payment-woo'),
+                'type' => 'textarea',
+                'default' => '',
+                'desc_tip' => true,
+                'description' => __('Secret ID provided by Payment Gateway.', 'conectapag-payment-woo')
             ]
         ];
     }
@@ -61,18 +101,106 @@ class WC_Gateway_Conectapag extends WC_Payment_Gateway
     {
         global $woocommerce;
 
-        $order = new WC_Order($order_id);
+        $order = wc_get_order($order_id);
 
-        // Mark as on-hold (we're awaiting the cheque)
-        $order->update_status('on-hold', __('Awaiting ConectaPag Payment', 'conectapag-payment-woo'));
+        $response = $this->send_payment_gateway($order);
 
-        // Remove cart
-        $woocommerce->cart->empty_cart();
+        if (!$response['status']) {
+            wc_get_logger()->error('Erro ao processar o pagamento: ' . $response['error'], ['source' => 'conectapag-payment-woo']);
+            wc_add_notice(__($response['error'], 'conectapag-payment-woo'), 'error');
+            $order->update_status('pending', __('Awaiting payment via QR Code', 'conectapag-payment-woo'));
 
-        // Return thankyou redirect
+            return [
+                'result' => 'fail',
+                'redirect' => '',
+            ];
+        }
+
+        // Marcar o pedido como pendente
+        $order->update_status('pendding', __('Awaiting payment via QR Code', 'conectapag-payment-woo'));
+
+        // Salvar o QR Code como metadado do pedido
+        $order->update_meta_data('_wc_order_payment_qrcode', $response['qr_code']);
+        $order->update_meta_data('_wc_order_payment_txid', $response['external_id']);
+        $order->save();
+
+        // Retornar sucesso e redirecionar para a página de recibo
         return [
             'result' => 'success',
-            'redirect' => $this->get_return_url($order)
+            'redirect' => $order->get_checkout_payment_url(true),
         ];
+    }
+
+    private function send_payment_gateway($order)
+    {
+        $order_id = $order->get_id();
+        $amount = $order->get_total();
+
+        require_once PLUGIN_PATH_GATEWAY . 'includes/ConectaPagHelper.php';
+        require_once (PLUGIN_PATH_GATEWAY . $this->get_option('environment') . '_constants.php');
+
+        $client = new ConectaPagHelper($this->get_option('api_client_id'), $this->get_option('api_secret_id'));
+        $paymentMethods = $client->getPaymentMethods();
+        // error_log(json_encode($paymentMethods));
+        $hashPix = $client->getHashByKey('PIX');
+        // error_log('PIX: ' . $hashPix);
+
+        $payload = [
+            'amount' => floatval($amount) * 100,
+            'payment_method' => $hashPix,
+            'client' => [
+                'identifier' => $order_id,
+                'name' => $order->get_billing_first_name() . ' ' . $order->get_billing_last_name(),
+                'email' => $order->get_billing_email(),
+                'document' => null,
+            ]
+        ];
+
+        $dict = $client->sendTransaction($payload);
+
+        if (!$dict['success']) {
+            error_log(json_encode($dict));
+            return ['status' => false, 'error' => $dict['error']];
+        }
+
+        return [
+            'status' => true,
+            'qr_code' => $dict['data']['pixCopiaECola'],
+            'external_id' => $dict['data']['txid']
+        ];
+    }
+
+    public function receipt_page($order_id)
+    {
+        echo '<p>' . __('Scan the QR Code below to make payment:', 'conectapag-payment-woo') . '</p>';
+        // echo QRcode::png($qr_code);
+        // echo '<img src="' . esc_url($qr_code) . '" alt="' . esc_attr__('QR Code de Pagamento', 'conectapag-payment-woo') . '" />';
+        echo '<img src="' . $this->generate_qr_code($order_id) . '" alt="' . esc_attr__('QR Code de Pagamento', 'conectapag-payment-woo') . '" />';
+
+        // var_dump(QRcode::raw('teste'));
+    }
+
+    private function generate_qr_code(int $order_id)
+    {
+        $order = wc_get_order($order_id);
+        $qr_code = $order->get_meta('_wc_order_payment_qrcode');
+
+        // Caminho para salvar a imagem do QR Code
+        $upload_dir = wp_upload_dir();
+        $qr_code_path = $upload_dir['basedir'] . '/qrcodes/';
+        $qr_code_url = $upload_dir['baseurl'] . '/qrcodes/';
+
+        if (!file_exists($qr_code_path)) {
+            mkdir($qr_code_path, 0755, true);
+        }
+
+        // Nome do arquivo do QR Code
+        $qr_code_file = "{$qr_code_path}order-{$order_id}.png";
+        $qr_code_url .= "order-{$order_id}.png";
+
+        // Gerar o QR Code
+        QRcode::png($qr_code, $qr_code_file, QR_ECLEVEL_L, 10);
+
+        return $qr_code_url;
     }
 }

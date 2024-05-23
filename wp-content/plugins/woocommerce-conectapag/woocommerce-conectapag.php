@@ -20,7 +20,10 @@ if (!defined('ABSPATH')) {
     exit; // Exit if accessed directly.
 }
 
-define('PLUGIN_PATH_CONECTAPAG', plugin_dir_path(__FILE__));
+define('PLUGIN_PATH_GATEWAY', plugin_dir_path(__FILE__));
+
+// Incluir a biblioteca phpqrcode.
+require_once PLUGIN_PATH_GATEWAY . 'includes/phpqrcode/qrlib.php';
 
 // Verificar se WooCommerce está ativo.
 if (!in_array('woocommerce/woocommerce.php', apply_filters('active_plugins', get_option('active_plugins'))))
@@ -31,7 +34,7 @@ add_action('plugins_loaded', 'init_conectapag');
 function init_conectapag()
 {
     if (class_exists('WC_Payment_Gateway'))
-        require_once (PLUGIN_PATH_CONECTAPAG . 'includes/WC_Gateway_Conectapag.php');
+        require_once (PLUGIN_PATH_GATEWAY . 'includes/WC_Gateway_Conectapag.php');
 }
 
 add_filter('woocommerce_payment_gateways', 'add_wc_gateway_conectapag');
@@ -42,7 +45,8 @@ function add_wc_gateway_conectapag($methods)
     return $methods;
 }
 
-
+// add webhook route
+require_once PLUGIN_PATH_GATEWAY . 'includes/Webhook.php';
 
 
 

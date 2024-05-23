@@ -1,0 +1,3 @@
+<?php
+
+$GLOBALS['URL_API'] = 'https://gateway.local/api';
