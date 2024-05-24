@@ -107,32 +107,35 @@ class WC_Gateway_Conectapag extends WC_Payment_Gateway
         global $woocommerce;
 
         $order = wc_get_order($order_id);
+        $qr_code = $order->get_meta('_wc_order_payment_qrcode');
 
-        $response = $this->send_payment_gateway($order);
+        if (!$qr_code) {
+            $response = $this->send_payment_gateway($order);
 
-        if (!$response['status']) {
-            wc_get_logger()->error('Erro ao processar o pagamento: ' . $response['error'], ['source' => 'conectapag-payment-woo']);
-            wc_add_notice(__($response['error'], 'conectapag-payment-woo'), 'error');
-            $order->update_status('pending', __('Awaiting payment via QR Code', 'conectapag-payment-woo'));
+            if (!$response['status']) {
+                wc_get_logger()->error('Erro ao processar o pagamento: ' . $response['error'], ['source' => 'conectapag-payment-woo']);
+                wc_add_notice(__($response['error'], 'conectapag-payment-woo'), 'error');
+                $order->update_status('pending', __('Awaiting payment via QR Code', 'conectapag-payment-woo'));
 
-            return [
-                'result' => 'fail',
-                'redirect' => '',
-            ];
+                return [
+                    'result' => 'fail',
+                    'redirect' => '',
+                ];
+            }
+
+            // Mark the order as pending
+            $order->update_status('pendding', __('Awaiting payment via QR Code', 'conectapag-payment-woo'));
+
+            // Save the QR Code as order metadata
+            $order->update_meta_data('_wc_order_payment_qrcode', $response['qr_code']);
+            $order->update_meta_data('_wc_order_payment_txid', $response['external_id']);
+            $order->save();
+
+            if (function_exists('WC'))
+                WC()->cart->empty_cart();
         }
 
-        // Marcar o pedido como pendente
-        $order->update_status('pendding', __('Awaiting payment via QR Code', 'conectapag-payment-woo'));
-
-        // Salvar o QR Code como metadado do pedido
-        $order->update_meta_data('_wc_order_payment_qrcode', $response['qr_code']);
-        $order->update_meta_data('_wc_order_payment_txid', $response['external_id']);
-        $order->save();
-
-        if (function_exists('WC'))
-            WC()->cart->empty_cart();
-
-        // Retornar sucesso e redirecionar para a página de recibo
+        // Return success and redirect to receipt page
         return [
             'result' => 'success',
             'redirect' => $order->get_checkout_payment_url(true),
@@ -143,14 +146,8 @@ class WC_Gateway_Conectapag extends WC_Payment_Gateway
     {
         $order_id = $order->get_id();
         $amount = $order->get_total();
-
-        // require_once (PLUGIN_PATH_GATEWAY . $this->get_option('environment') . '_constants.php');
-
         $client = new ConectaPagHelper($this->get_option('api_client_id'), $this->get_option('api_secret_id'));
-        // $paymentMethods = $client->getPaymentMethods();
-        // error_log(json_encode($paymentMethods));
         $hashPix = $client->getHashByKey('PIX');
-        // error_log('PIX: ' . $hashPix);
 
         $payload = [
             'amount' => floatval($amount) * 100,
@@ -188,7 +185,7 @@ class WC_Gateway_Conectapag extends WC_Payment_Gateway
         $order = wc_get_order($order_id);
         $qr_code = $order->get_meta('_wc_order_payment_qrcode');
 
-        // Caminho para salvar a imagem do QR Code
+        // Path to save QR Code image
         $upload_dir = wp_upload_dir();
         $qr_code_path = $upload_dir['basedir'] . '/qrcodes/';
         $qr_code_url = $upload_dir['baseurl'] . '/qrcodes/';
@@ -197,11 +194,11 @@ class WC_Gateway_Conectapag extends WC_Payment_Gateway
             mkdir($qr_code_path, 0755, true);
         }
 
-        // Nome do arquivo do QR Code
+        // QR Code file name
         $qr_code_file = "{$qr_code_path}order-{$order_id}.png";
         $qr_code_url .= "order-{$order_id}.png";
 
-        // Gerar o QR Code
+        // Generate the QR Code
         QRcode::png($qr_code, $qr_code_file, QR_ECLEVEL_L, 10);
 
         return $qr_code_url;
