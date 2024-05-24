@@ -29,14 +29,21 @@ require_once PLUGIN_PATH_GATEWAY . 'includes/phpqrcode/qrlib.php';
 if (!in_array('woocommerce/woocommerce.php', apply_filters('active_plugins', get_option('active_plugins'))))
     return;
 
+/**
+ * Init gatewayy
+ */
 add_action('plugins_loaded', 'init_conectapag');
 
 function init_conectapag()
 {
-    if (class_exists('WC_Payment_Gateway'))
-        require_once (PLUGIN_PATH_GATEWAY . 'includes/WC_Gateway_Conectapag.php');
+    if (class_exists('WC_Payment_Gateway')) {
+        require_once(PLUGIN_PATH_GATEWAY . 'includes/WC_Gateway_Conectapag.php');
+    }
 }
 
+/**
+ * Add WC_Gateway_Conectapag
+ */
 add_filter('woocommerce_payment_gateways', 'add_wc_gateway_conectapag');
 
 function add_wc_gateway_conectapag($methods)
@@ -45,9 +52,32 @@ function add_wc_gateway_conectapag($methods)
     return $methods;
 }
 
-// add webhook route
+/**
+ * Register WP-Cron
+ */
+register_activation_hook(PLUGIN_PATH_GATEWAY, 'conectapag_cron_job');
+
+function conectapag_cron_job()
+{
+    if (!wp_next_scheduled('conectapag_cron_job_hook')) {
+        wp_schedule_event(time(), 'hourly', 'conectapag_cron_job_hook');
+    }
+}
+
+// Função que será executada pela tarefa agendada
+add_action('conectapag_cron_job_hook', 'conectapag_cron_function');
+
+function conectapag_cron_function()
+{
+    $gateway = new WC_Gateway_Conectapag();
+
+    if (!empty($gateway->get_option('api_client_id')) && !empty($gateway->get_option('api_secret_id'))) {
+        $client = new ConectaPagHelper($gateway->get_option('api_client_id'), $gateway->get_option('api_secret_id'));
+        $client->getPaymentMethods();
+    }
+}
+
+/**
+ * add webhook route
+ */
 require_once PLUGIN_PATH_GATEWAY . 'includes/Webhook.php';
-
-
-
-

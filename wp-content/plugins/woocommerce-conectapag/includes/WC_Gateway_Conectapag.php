@@ -1,5 +1,7 @@
 <?php
 
+require_once PLUGIN_PATH_GATEWAY . 'includes/ConectaPagHelper.php';
+
 class WC_Gateway_Conectapag extends WC_Payment_Gateway
 {
     /**
@@ -28,6 +30,9 @@ class WC_Gateway_Conectapag extends WC_Payment_Gateway
         // empty car when change status
         add_action('woocommerce_order_status_pending', 'empty_cart_on_order_status_change', 10, 2);
         add_action('woocommerce_order_status_processing', 'empty_cart_on_order_status_change', 10, 2);
+
+        if (!defined('GATEWAY_URL_API'))
+            require_once(PLUGIN_PATH_GATEWAY . $this->get_option('environment') . '_constants.php');
     }
 
     function empty_cart_on_order_status_change($order_id, $order)
@@ -124,6 +129,9 @@ class WC_Gateway_Conectapag extends WC_Payment_Gateway
         $order->update_meta_data('_wc_order_payment_txid', $response['external_id']);
         $order->save();
 
+        if (function_exists('WC'))
+            WC()->cart->empty_cart();
+
         // Retornar sucesso e redirecionar para a página de recibo
         return [
             'result' => 'success',
@@ -136,11 +144,10 @@ class WC_Gateway_Conectapag extends WC_Payment_Gateway
         $order_id = $order->get_id();
         $amount = $order->get_total();
 
-        require_once PLUGIN_PATH_GATEWAY . 'includes/ConectaPagHelper.php';
-        require_once (PLUGIN_PATH_GATEWAY . $this->get_option('environment') . '_constants.php');
+        // require_once (PLUGIN_PATH_GATEWAY . $this->get_option('environment') . '_constants.php');
 
         $client = new ConectaPagHelper($this->get_option('api_client_id'), $this->get_option('api_secret_id'));
-        $paymentMethods = $client->getPaymentMethods();
+        // $paymentMethods = $client->getPaymentMethods();
         // error_log(json_encode($paymentMethods));
         $hashPix = $client->getHashByKey('PIX');
         // error_log('PIX: ' . $hashPix);
@@ -173,11 +180,7 @@ class WC_Gateway_Conectapag extends WC_Payment_Gateway
     public function receipt_page($order_id)
     {
         echo '<p>' . __('Scan the QR Code below to make payment:', 'conectapag-payment-woo') . '</p>';
-        // echo QRcode::png($qr_code);
-        // echo '<img src="' . esc_url($qr_code) . '" alt="' . esc_attr__('QR Code de Pagamento', 'conectapag-payment-woo') . '" />';
         echo '<img src="' . $this->generate_qr_code($order_id) . '" alt="' . esc_attr__('QR Code de Pagamento', 'conectapag-payment-woo') . '" />';
-
-        // var_dump(QRcode::raw('teste'));
     }
 
     private function generate_qr_code(int $order_id)

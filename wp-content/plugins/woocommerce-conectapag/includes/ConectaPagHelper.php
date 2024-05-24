@@ -49,11 +49,8 @@ class ConectaPagHelper
 
             $response_data = json_decode($response, true);
 
-            // $_SESSION["token_access"] = $response_data['token'];
-            // $_SESSION["token_expires_in"] = time() + $response_data['expires_in'];
-            // $_SESSION["token_type"] = $response_data['token_type'];
-
-            $this->setCache('_gateway_token', $response_data['token'], $response_data['expires_in']);
+            if (isset($response_data['token']))
+                $this->setCache('_gateway_token', $response_data['token'], $response_data['expires_in']);
         }
 
         return $data;
@@ -65,6 +62,9 @@ class ConectaPagHelper
 
         if ($data === false) {
             $token = $this->getToken();
+
+            if (!$token)
+                return null;
 
             $url = GATEWAY_URL_API . '/settings/payment-methods';
 
@@ -88,10 +88,15 @@ class ConectaPagHelper
                 return null;
             }
 
-            // error_log('Payments methods');
-            // error_log($response);
+            $responseData = json_decode($response);
 
-            // $_SESSION["gateway_payment_methods"] = json_decode($response, true);
+            // error_log('Payments methods');
+            // error_log(json_encode($responseData));
+
+            if (!$responseData && !$responseData->success) {
+                error_log($responseData->error);
+                return null;
+            }
 
             $this->setCache('_gateway_payment_methods', json_decode($response, true));
         }
