@@ -13,15 +13,27 @@ class ConectaPagHelper
         $this->getPaymentMethods();
     }
 
+    public function setCache()
+    {
+        // delete caches
+        delete_transient('_gateway_token_cached');
+        delete_transient('_gateway_payment_methods_cached');
+
+        $token = $this->getToken();
+
+        if (is_wp_error($token)) {
+            // show error message
+            echo '<div class="notice notice-error"><p>' . $token->get_error_message() . '</p></div>';
+            return;
+        }
+    }
+
     private function getToken()
     {
-        $data = $this->getCache('_gateway_token');
+        // delete_transient('_gateway_token_cached');
+        $token = get_transient('_gateway_token_cached');
 
-        error_log(GATEWAY_URL_API);
-        error_log($this->clientId);
-        error_log($this->clientSecret);
-
-        if ($data === false) {
+        if ($token === false) {
             $url = GATEWAY_URL_API . '/token';
             $params = [
                 'grant_type' => 'client_credentials',
@@ -40,28 +52,45 @@ class ConectaPagHelper
 
             curl_close($ch);
 
-            // error_log(json_encode($response));
-
             if (!$response) {
-                error_log('Gateway error [3387] ' . $status_code);
-                return null;
+                // delete cache if exist
+                delete_transient('_gateway_token_cached');
+                error_log('Clean token cache');
+
+                return new WP_Error('payment_error', __('Gateway error [3387] ', 'conectapag-payment-woo') . $status_code);
             }
 
             $response_data = json_decode($response, true);
 
-            if (isset($response_data['token']))
-                $this->setCache('_gateway_token', $response_data['token'], $response_data['expires_in']);
+            if (!isset($response_data['token'])) {
+                // delete cache if exist
+                delete_transient('_gateway_token_cached');
+                error_log('Clean token cache');
+
+                return new WP_Error('payment_error', __('Unable to communicate with payment gateway.', 'conectapag-payment-woo'));
+            }
+
+            set_transient('_gateway_token_cached', $response_data['token'], $response_data['expires_in']);
+            $token = $response_data['token'];
         }
 
-        return $data;
+        return $token;
     }
 
     public function getPaymentMethods()
     {
-        $data = $this->getCache('_gateway_payment_methods');
+        $data = get_transient('_gateway_payment_methods_cached');
 
         if ($data === false) {
             $token = $this->getToken();
+
+            if (is_wp_error($token)) {
+                echo '<div class="notice notice-error"><p>' . $token->get_error_message() . '</p></div>';
+                return;
+            }
+
+            error_log($token);
+            // wp_die('foi');
 
             if (!$token)
                 return null;
@@ -84,21 +113,23 @@ class ConectaPagHelper
             error_log(json_encode($response));
 
             if (!$response) {
-                error_log('Gateway error [3388] ' . $status_code);
-                return null;
+                // delete cache if exist
+                delete_transient('_gateway_payment_methods_cached');
+
+                return new WP_Error('payment_error', __('Gateway error [3388] ', 'conectapag-payment-woo') . $status_code);
             }
 
-            $responseData = json_decode($response);
+            $responseData = json_decode($response, true);
 
-            // error_log('Payments methods');
-            // error_log(json_encode($responseData));
+            if (!$responseData || !isset($responseData['success']) || !$responseData['success']) {
+                // delete cache if exist
+                delete_transient('_gateway_payment_methods_cached');
 
-            if (!$responseData && !$responseData->success) {
-                error_log($responseData->error);
-                return null;
+                return new WP_Error('payment_error', __('Error fetching payment methods.', 'conectapag-payment-woo'));
             }
 
-            $this->setCache('_gateway_payment_methods', json_decode($response, true));
+            set_transient('_gateway_payment_methods_cached', $responseData, 12 * HOUR_IN_SECONDS);
+            $data = $responseData;
         }
 
         return $data;
@@ -106,13 +137,15 @@ class ConectaPagHelper
 
     public function getHashByKey($key)
     {
-        $array = $this->getPaymentMethods()['data'];
+        $methods = $this->getPaymentMethods();
 
-        error_log(json_encode($array));
-        error_log(gettype($array));
+        if (is_wp_error($methods)) {
+            echo '<div class="notice notice-error"><p>' . $methods->get_error_message() . '</p></div>';
+            return null;
+        }
 
-        if (array_key_exists($key, $array)) {
-            foreach ($array[$key] as $elemento) {
+        if (isset($methods['data']) && array_key_exists($key, $methods['data'])) {
+            foreach ($methods['data'][$key] as $elemento) {
                 if (array_key_exists('hash', $elemento)) {
                     return $elemento['hash'];
                 }
@@ -124,92 +157,77 @@ class ConectaPagHelper
 
     public function sendTransaction($payload)
     {
-        $token = $this->getToken();
+        try {
+            $token = $this->getToken();
 
-        $url = GATEWAY_URL_API . '/transaction';
+            if (is_wp_error($token))
+                throw new Exception("Error[{$token->get_error_code()}]: {$token->get_error_message()}");
 
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $url);
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, [
-            "Authorization: Bearer {$token}"
-        ]);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($payload));
+            $url = GATEWAY_URL_API . '/transaction';
 
-        $response = curl_exec($ch);
-        $status_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $ch = curl_init();
+            curl_setopt($ch, CURLOPT_URL, $url);
+            curl_setopt($ch, CURLOPT_POST, true);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                "Authorization: Bearer {$token}"
+            ]);
+            curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($payload));
 
-        curl_close($ch);
+            $response = curl_exec($ch);
+            $status_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 
-        if (!$response)
-            return ['success' => false, 'message' => 'Error [3389]', 'code' => $status_code];
+            curl_close($ch);
 
-        return json_decode($response, true);
+            $response = json_decode($response, true);
+
+            // error_log($status_code);
+            // error_log(json_encode($response));
+
+            if (!$response || !$response['success'])
+                throw new Exception("Error status code: {$status_code}");
+
+            return ['success' => true, 'data' => $response['data']];
+        } catch (Exception $e) {
+            error_log("{$e->getMessage()} in {$e->getFile()}:{$e->getLine()}");
+            return ['success' => false, 'error' => $e->getMessage()];
+        }
     }
 
     public function sendWithdraw($payload)
     {
-        $token = $this->getToken();
+        try {
+            $token = $this->getToken();
 
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, GATEWAY_URL_API . '/withdraw');
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_ENCODING, '');
-        curl_setopt($ch, CURLOPT_MAXREDIRS, 10);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 0);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, [
-            'Content-Type: application/json',
-            "Authorization: Bearer $token"
-        ]);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
+            if (is_wp_error($token))
+                throw new Exception("Error[{$token->get_error_code()}]: {$token->get_error_message()}");
 
-        $response = curl_exec($ch);
-        $status_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $ch = curl_init();
+            curl_setopt($ch, CURLOPT_URL, GATEWAY_URL_API . '/withdraw');
+            curl_setopt($ch, CURLOPT_POST, true);
+            curl_setopt($ch, CURLOPT_ENCODING, '');
+            curl_setopt($ch, CURLOPT_MAXREDIRS, 10);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 0);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+            curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                'Content-Type: application/json',
+                "Authorization: Bearer $token"
+            ]);
+            curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
 
-        curl_close($ch);
+            $response = curl_exec($ch);
+            $status_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 
-        if (!$response)
-            return ['success' => false, 'message' => 'Error [3390]', 'code' => $status_code];
+            curl_close($ch);
 
-        return json_decode($response, true);
-    }
+            if (!$response)
+                throw new Exception("Error status code: {$status_code}");
 
-    private function setCache($key, $data, $duration = 86400)
-    {
-        $cacheDir = PLUGIN_PATH_GATEWAY . 'cache/';
-        $cacheFile = $cacheDir . md5($key) . '.cache';
-
-        if (!is_dir($cacheDir)) {
-            mkdir($cacheDir, 0755, true);
+            return json_decode($response, true);
+        } catch (Exception $e) {
+            error_log("{$e->getMessage()} in {$e->getFile()}:{$e->getLine()}");
+            return ['success' => false, 'error' => $e->getMessage()];
         }
-
-        $expiryTime = time() + $duration;
-        $cacheData = [
-            'expiry' => $expiryTime,
-            'data' => serialize($data)
-        ];
-
-        file_put_contents($cacheFile, json_encode($cacheData));
-    }
-
-    function getCache($key)
-    {
-        $cacheFile = PLUGIN_PATH_GATEWAY . 'cache/' . md5($key) . '.cache';
-
-        if (!file_exists($cacheFile)) {
-            return false;
-        }
-
-        $cacheData = json_decode(file_get_contents($cacheFile), true);
-
-        if (time() > $cacheData['expiry']) {
-            unlink($cacheFile);
-            return false;
-        }
-
-        return unserialize($cacheData['data']);
     }
 }

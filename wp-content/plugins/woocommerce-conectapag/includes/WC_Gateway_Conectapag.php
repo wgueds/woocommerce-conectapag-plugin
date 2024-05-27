@@ -24,7 +24,8 @@ class WC_Gateway_Conectapag extends WC_Payment_Gateway
         $this->title = $this->get_option('title');
         $this->description = $this->get_option('description');
 
-        add_action('woocommerce_update_options_payment_gateways_' . $this->id, [$this, 'process_admin_options']);
+        // add_action('woocommerce_update_options_payment_gateways_' . $this->id, [$this, 'process_admin_options']);
+        add_action('woocommerce_update_options_payment_gateways_' . $this->id, [$this, 'save_conectapag_data']);
         add_action('woocommerce_receipt_' . $this->id, [$this, 'receipt_page']);
 
         // empty car when change status
@@ -32,7 +33,18 @@ class WC_Gateway_Conectapag extends WC_Payment_Gateway
         add_action('woocommerce_order_status_processing', 'empty_cart_on_order_status_change', 10, 2);
 
         if (!defined('GATEWAY_URL_API'))
-            require_once(PLUGIN_PATH_GATEWAY . $this->get_option('environment') . '_constants.php');
+            require_once (PLUGIN_PATH_GATEWAY . $this->get_option('environment') . '_constants.php');
+    }
+
+    function save_conectapag_data()
+    {
+        // save form data
+        $this->process_admin_options();
+
+        if (!empty($this->get_option('api_client_id')) && !empty($this->get_option('api_secret_id'))) {
+            $client = new ConectaPagHelper($this->get_option('api_client_id'), $this->get_option('api_secret_id'));
+            $client->setCache();
+        }
     }
 
     function empty_cart_on_order_status_change($order_id, $order)
@@ -112,7 +124,9 @@ class WC_Gateway_Conectapag extends WC_Payment_Gateway
         if (!$qr_code) {
             $response = $this->send_payment_gateway($order);
 
-            if (!$response['status']) {
+            error_log(json_encode($response));
+
+            if (!$response['success']) {
                 wc_get_logger()->error('Erro ao processar o pagamento: ' . $response['error'], ['source' => 'conectapag-payment-woo']);
                 wc_add_notice(__($response['error'], 'conectapag-payment-woo'), 'error');
                 $order->update_status('pending', __('Awaiting payment via QR Code', 'conectapag-payment-woo'));
@@ -162,13 +176,16 @@ class WC_Gateway_Conectapag extends WC_Payment_Gateway
 
         $dict = $client->sendTransaction($payload);
 
+        error_log('dict response');
+        error_log(json_encode($dict));
+
         if (!$dict['success']) {
             error_log(json_encode($dict));
-            return ['status' => false, 'error' => $dict['error']];
+            return ['success' => false, 'error' => $dict['error']];
         }
 
         return [
-            'status' => true,
+            'success' => true,
             'qr_code' => $dict['data']['pixCopiaECola'],
             'external_id' => $dict['data']['txid']
         ];
@@ -177,7 +194,7 @@ class WC_Gateway_Conectapag extends WC_Payment_Gateway
     public function receipt_page($order_id)
     {
         echo '<p>' . __('Scan the QR Code below to make payment:', 'conectapag-payment-woo') . '</p>';
-        echo '<img src="' . $this->generate_qr_code($order_id) . '" alt="' . esc_attr__('QR Code de Pagamento', 'conectapag-payment-woo') . '" />';
+        echo '<img width="300" src="' . $this->generate_qr_code($order_id) . '" alt="' . esc_attr__('QR Code de Pagamento', 'conectapag-payment-woo') . '" />';
     }
 
     private function generate_qr_code(int $order_id)
